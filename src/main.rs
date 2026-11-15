@@ -1,6 +1,6 @@
 use clap::*;
 use clap_num::maybe_hex;
-use exhume_body::{Body, BodySlice};
+use exhume_body::{BodySlice, credentials};
 use exhume_btrfs::BtrfsFS;
 use exhume_btrfs::key::FS_TREE_OBJECTID;
 use log::{debug, error, info};
@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Write;
 
 fn main() {
-    let matches = Command::new("exhume_btrfs")
+    let command = Command::new("exhume_btrfs")
         .version(crate_version!())
         .author(crate_authors!())
         .about("Exhume artifacts from a Btrfs partition (read-only).")
@@ -132,8 +132,8 @@ fn main() {
                 .value_parser(["error", "warn", "info", "debug", "trace"])
                 .default_value("info")
                 .help("Set the log verbosity level"),
-        )
-        .get_matches();
+        );
+    let matches = password_args(command).get_matches();
 
     let log_level_str = matches.get_one::<String>("log_level").unwrap();
     let level_filter = match log_level_str.as_str() {
@@ -158,7 +158,18 @@ fn main() {
     let path = matches.get_one::<String>("path").cloned();
     let json_output = matches.get_flag("json");
 
-    let body = Body::new(file_path.to_owned(), format);
+    let body = credentials::open_body(
+        file_path,
+        format,
+        matches
+            .get_one::<String>("password_file")
+            .map(String::as_str),
+        matches.get_flag("password_stdin"),
+    )
+    .unwrap_or_else(|message| {
+        error!("{message}");
+        std::process::exit(1);
+    });
     debug!("Created Body from '{}'", file_path);
     let partition_size = size * body.get_sector_size() as u64;
     let slice = match BodySlice::new(&body, offset, partition_size) {
@@ -336,4 +347,24 @@ fn main() {
             Err(e) => error!("Could not read the inode content: {e}"),
         }
     }
+}
+
+/// Register this executable's mutually exclusive container-password sources.
+fn password_args(command: clap::Command) -> clap::Command {
+    command
+        .arg(
+            clap::Arg::new("password_file")
+                .long("password-file")
+                .global(true)
+                .value_name("PATH")
+                .conflicts_with("password_stdin")
+                .help("Read the image container password from a file; remove one trailing line ending."),
+        )
+        .arg(
+            clap::Arg::new("password_stdin")
+                .long("password-stdin")
+                .global(true)
+                .action(clap::ArgAction::SetTrue)
+                .help("Read the image container password from stdin; remove one trailing line ending."),
+        )
 }
